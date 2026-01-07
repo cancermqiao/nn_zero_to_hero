@@ -17,7 +17,7 @@ def main(args):
 
     torch.manual_seed(11)
     if device == "cuda":
-        torch.cuda.set_seed(11)
+        torch.cuda.manual_seed(11)
 
     torch.set_float32_matmul_precision(args.matmul_percision)
 
