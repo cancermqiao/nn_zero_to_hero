@@ -3,11 +3,22 @@ from dataclasses import dataclass
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
+from typing import Tuple
+
+
+@dataclass
+class GPTConfig:
+    block_size: int = 1024
+    vocab_size: int = 50257  # 50,000 BPE merges + 256 bytes tokens + 1  <|endoftext|>
+    n_layer: int = 12
+    n_head: int = 12
+    n_embd: int = 768
+    flash_attention: bool = True
 
 
 class CausalSelfAttention(nn.Module):
 
-    def __init__(self, config):
+    def __init__(self, config: GPTConfig):
         super().__init__()
         assert config.n_embd % config.n_head == 0
         # q, k, v in all
@@ -30,15 +41,20 @@ class CausalSelfAttention(nn.Module):
         # e.g. in GPT-2 (124M), n_head=12, hs=64, C=n_embedding=768
         qkv = self.c_attn(x)
         q, k, v = qkv.split(self.n_embd, dim=2)
-        q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)  # (B, nh, T, hs)
+        q = q.view(B, T, self.n_head,
+                   C // self.n_head).transpose(1, 2)  # (B, nh, T, hs)
         k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
         v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
 
-        att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
-        # mask
-        att = att.masked_fill(self.bias[:, :, :T, :T] == 0, float('-inf'))
-        att = F.softmax(att, dim=-1)
-        y = att @ v  # (B, nh, T, T) X (B, nh, T, hs) -> (B, nh, T, hs)
+        if self.config.flash_attention:
+            y = F.scaled_dot_product_attention(q, k, v, is_causal=True)
+        else:
+            att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
+            # mask
+            att = att.masked_fill(self.bias[:, :, :T, :T] == 0, float('-inf'))
+            att = F.softmax(att, dim=-1)
+            y = att @ v  # (B, nh, T, T) X (B, nh, T, hs) -> (B, nh, T, hs)
+
         y = y.transpose(1, 2).contiguous().view(B, T, C)  # (B, T, C)
         # output projection
         y = self.c_proj(y)  # (B, T, C)
@@ -47,7 +63,7 @@ class CausalSelfAttention(nn.Module):
 
 class MLP(nn.Module):
 
-    def __init__(self, config):
+    def __init__(self, config: GPTConfig):
         super().__init__()
         self.c_fc = nn.Linear(config.n_embd, 4 * config.n_embd)
         self.gelu = nn.GELU(approximate='tanh')
@@ -62,7 +78,7 @@ class MLP(nn.Module):
 
 class Block(nn.Module):
 
-    def __init__(self, config):
+    def __init__(self, config: GPTConfig):
         super().__init__()
         self.ln_1 = nn.LayerNorm(config.n_embd)
         self.attn = CausalSelfAttention(config)
@@ -75,18 +91,9 @@ class Block(nn.Module):
         return x
 
 
-@dataclass
-class GPTConfig:
-    block_size: int = 1024
-    vocab_size: int = 50257  # 50,000 BPE merges + 256 bytes tokens + 1  <|endoftext|>
-    n_layer: int = 12
-    n_head: int = 12
-    n_embd: int = 768
-
-
 class GPT(nn.Module):
 
-    def __init__(self, config):
+    def __init__(self, config: GPTConfig):
         super().__init__()
         self.config = config
 
@@ -97,16 +104,18 @@ class GPT(nn.Module):
                      [Block(config) for _ in range(config.n_layer)]),
                  ln_f=nn.LayerNorm(config.n_embd)))
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
-        
+
         # weight sharing scheme
         self.transformer.wte.weight = self.lm_head.weight
-        
+
         # init params
         self.apply(self._init_weights)
         # apply special scaled init to the residual projections, per GPT-2 paper
         for pn, p in self.named_parameters():
             if pn.endswith('c_proj.weight'):
-                torch.nn.init.normal_(p, mean=0.0, std=0.02/math.sqrt(2 * config.n_layer))
+                torch.nn.init.normal_(p,
+                                      mean=0.0,
+                                      std=0.02 / math.sqrt(2 * config.n_layer))
 
     def _init_weights(self, module):
         if isinstance(module, nn.Linear):
@@ -115,27 +124,30 @@ class GPT(nn.Module):
                 torch.nn.init.zeros_(module.bias)
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
-        
-    def forward(self, idx, targets=None):
+
+    def forward(self, idx, targets=None) -> Tuple[torch.Tensor, torch.Tensor]:
         # idx is of shape (B, T)
-        B, T = idx.size()
+        _, T = idx.size()
         assert T <= self.config.block_size, f"Cannot forward sequence of length {T}, block size is only {self.config.block_size}"
         # forward the token and position embeddings
         pos = torch.arange(0, T, dtype=torch.long, device=idx.device)
-        pos_emb = self.transformer.wpe(pos) # position embeddings of shape (T, n_embd)
-        tok_emb = self.transformer.wte(idx) # token embeddings of shape (B, T, n_embd)
-        x = tok_emb + pos_emb # (B, T, n_embd)
+        pos_emb = self.transformer.wpe(
+            pos)  # position embeddings of shape (T, n_embd)
+        tok_emb = self.transformer.wte(
+            idx)  # token embeddings of shape (B, T, n_embd)
+        x = tok_emb + pos_emb  # (B, T, n_embd)
         # forward the blocks of the transformer
         for block in self.transformer.h:
             x = block(x)
         # forward the final layernorm and the classifier
-        x = self.transformer.ln_f(x) # (B, T, n_embd)
-        logits = self.lm_head(x) # (B, T, vocab_size)
+        x = self.transformer.ln_f(x)  # (B, T, n_embd)
+        logits = self.lm_head(x)  # (B, T, vocab_size)
         loss = None
         if targets is not None:
-            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
+            loss = F.cross_entropy(logits.view(-1, logits.size(-1)),
+                                   targets.view(-1))
         return logits, loss
-        
+
     @classmethod
     def from_pretrained(cls, model_type):
         """Loads pretained GPT-2 model weights from huggingface"""
@@ -188,4 +200,3 @@ class GPT(nn.Module):
                     sd[k].copy_(sd_hf[k])
 
         return model
-
