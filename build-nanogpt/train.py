@@ -46,7 +46,7 @@ def main(args):
             print(f"logits dtype: {logits.dtype}")
         
         if args.autocast_dtype == "float16":
-            scaler.scale(loss)
+            scaler.scale(loss).backward()
             scaler.step(optimizer)
             scaler.update()
         else:
