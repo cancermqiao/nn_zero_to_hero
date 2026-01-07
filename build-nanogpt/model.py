@@ -21,6 +21,7 @@ class CausalSelfAttention(nn.Module):
     def __init__(self, config: GPTConfig):
         super().__init__()
         assert config.n_embd % config.n_head == 0
+        self.config = config
         # q, k, v in all
         self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd)
         # output projection
