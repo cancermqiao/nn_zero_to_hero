@@ -13,7 +13,7 @@ print(f"using device: {device}")
 
 
 def main(args):
-    train_loader = DataLoaderLite(B=16, T=1024)
+    train_loader = DataLoaderLite(B=args.batch_size, T=1024)
 
     torch.manual_seed(11)
     if device == "cuda":
@@ -63,6 +63,10 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    parser.add_argument("--batch_size",
+                        type=int,
+                        default=8,
+                        help="batch size")
     parser.add_argument("--matmul_percision",
                         type=str,
                         default="highest",
