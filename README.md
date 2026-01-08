@@ -14,3 +14,6 @@ wget https://raw.githubusercontent.com/karpathy/makemore/master/names.txt
 ```bash
 wget https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt
 ```
+
+## Google Colab
+- [nanogpt.ipynb](https://colab.research.google.com/drive/1uqBeuh-ttOjjXH981-JjKNDnkJ5k8OIa?hl=zh-CN#scrollTo=GIvtWvsj_a5u)
