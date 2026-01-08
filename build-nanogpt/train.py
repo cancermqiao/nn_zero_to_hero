@@ -60,10 +60,9 @@ def main(args):
     if args.model_compile:
         model = torch.compile(model)
 
-    optimizer = torch.optim.AdamW(model.parameters(),
-                                  lr=3e-4,
-                                  betas=(0.9, 0.95),
-                                  eps=1e-8)
+    optimizer = model.configure_optimizers(weight_decay=0.1,
+                                           learning_rate=args.max_lr,
+                                           device=device)
     lr_scheduler = CosineDecayLR(optimizer,
                                  max_steps=args.max_steps,
                                  warmup_steps=args.warmup_steps,
