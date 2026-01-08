@@ -55,7 +55,7 @@ def main(args):
         GPTConfig(vocab_size=args.vocab_size,
                   flash_attention=args.flash_attention))
     model.to(device)
-    summary(model, input_size=(train_loader.B, train_loader.T))
+    summary(model, input_size=(train_loader.B, train_loader.T), dtypes=[torch.long])
     # 模型编译
     if args.model_compile:
         model = torch.compile(model)
@@ -75,7 +75,7 @@ def main(args):
         scaler = torch.GradScaler()
     elif args.autocast_dtype == "bfloat16":
         autocast_dtype = torch.bfloat16
-    for step in range(args.max_steps):
+    for step in range(1, args.max_steps + 1):
         t0 = time.time()
         x, y = train_loader.next_batch()
         x, y = x.to(device), y.to(device)
@@ -101,7 +101,7 @@ def main(args):
         dt = (t1 - t0) * 1000  # time difference in milliseconds
         tokens_per_sec = (train_loader.B * train_loader.T) / (t1 - t0)
         print(
-            f"step {step:4d} | lr: {lr_scheduler.lr:.6f} | loss: {loss.item():.6f} | norm: {norm:.4f} | dt: {dt:.2f}ms | tok/sec: {tokens_per_sec:.2f}"
+            f"step {step:4d} | loss: {loss.item():.6f} | lr: {lr_scheduler.lr:.4e} | norm: {norm:.4f} | dt: {dt:.2f}ms | tok/sec: {tokens_per_sec:.2f}"
         )
 
 
