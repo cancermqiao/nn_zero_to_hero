@@ -43,7 +43,7 @@ class CosineDecayLR:
 
 
 def main(args):
-    train_loader = DataLoaderLite(B=args.batch_size, T=1024)
+    train_loader = DataLoaderLite(B=args.batch_size, T=args.sequence_length)
 
     torch.manual_seed(11)
     if device == "cuda":
@@ -56,7 +56,7 @@ def main(args):
                   flash_attention=args.flash_attention))
     model.to(device)
     summary(model, input_size=(train_loader.B, train_loader.T), dtypes=[torch.long])
-    # 模型编译
+    # 模型编译 
     if args.model_compile:
         model = torch.compile(model)
 
@@ -69,38 +69,33 @@ def main(args):
                                  max_lr=args.max_lr)
 
     autocast_dtype = torch.float32
-    if args.autocast_dtype == "float16":
-        autocast_dtype = torch.float16
-        scaler = torch.GradScaler()
-    elif args.autocast_dtype == "bfloat16":
+    if args.autocast_dtype == "bfloat16":
         autocast_dtype = torch.bfloat16
+
     for step in range(1, args.max_steps + 1):
         t0 = time.time()
-        x, y = train_loader.next_batch()
-        x, y = x.to(device), y.to(device)
         optimizer.zero_grad()
-        with torch.autocast(device_type=device, dtype=autocast_dtype):
-            logits, loss = model(x, y)
+        lr_scheduler.step(step)
+        loss_accum = 0.0
+        for _ in range(args.grad_accum_steps):
+            x, y = train_loader.next_batch()
+            x, y = x.to(device), y.to(device)
+            with torch.autocast(device_type=device, dtype=autocast_dtype):
+                logits, loss = model(x, y)
+            loss = loss / args.grad_accum_steps
+            loss_accum += loss.item()
+            loss.backward()
+
         if step == 0:
             print(f"logits dtype: {logits.dtype}")
-
-        lr_scheduler.step(step)
-        if args.autocast_dtype == "float16":
-            scaler.scale(loss).backward()
-            scaler.unscale_(optimizer)
-            norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            scaler.step(optimizer)
-            scaler.update()
-        else:
-            loss.backward()
-            norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            optimizer.step()
+        norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        optimizer.step()
         torch.cuda.synchronize()
         t1 = time.time()
         dt = (t1 - t0) * 1000  # time difference in milliseconds
         tokens_per_sec = (train_loader.B * train_loader.T) / (t1 - t0)
         print(
-            f"step {step:4d} | loss: {loss.item():.6f} | lr: {lr_scheduler.lr:.4e} | norm: {norm:.4f} | dt: {dt:.2f}ms | tok/sec: {tokens_per_sec:.2f}"
+            f"step {step:4d} | loss: {loss_accum:.6f} | lr: {lr_scheduler.lr:.4e} | norm: {norm:.4f} | dt: {dt:.2f}ms | tok/sec: {tokens_per_sec:.2f}"
         )
 
 
@@ -112,7 +107,9 @@ if __name__ == "__main__":
                         default=10,
                         help="warmup步数")
     parser.add_argument("--max_lr", type=float, default=6e-4, help="最大学习率")
-    parser.add_argument("--batch_size", type=int, default=8, help="batch size")
+    parser.add_argument("--global_batch_size", type=int, default=524288, help="全局batch size")
+    parser.add_argument("--batch_size", type=int, default=16, help="batch size")
+    parser.add_argument("--sequence_length", type=int, default=1024, help="序列长度")
     parser.add_argument("--matmul_percision",
                         type=str,
                         default="highest",
@@ -121,7 +118,7 @@ if __name__ == "__main__":
     parser.add_argument("--autocast_dtype",
                         type=str,
                         default="float32",
-                        choices=["float16", "bfloat16", "float32"],
+                        choices=["bfloat16", "float32"],
                         help="autocast数据类型")
     parser.add_argument("--model_compile",
                         action="store_true",
@@ -134,4 +131,6 @@ if __name__ == "__main__":
     parser.add_argument("--vocab_size", type=int, default=50257, help="词汇表大小")
     args = parser.parse_args()
 
+    assert args.global_batch_size % (args.batch_size * args.sequence_length) == 0, "全局batch size必须是batch size和序列长度的整数倍"
+    args.grad_accum_steps = args.global_batch_size // (args.batch_size * args.sequence_length)
     main(args)
